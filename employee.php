@@ -1078,6 +1078,8 @@ if (isset($_SESSION['employee_id'])) {
                                        data-field="extraHours" data-index="${index}" 
                                        ${canEdit ? '' : 'disabled'} onchange="handleFieldChange(${index}, 'extraHours', this.value)">
                             </div>
+                            <div class="mobile-field-row">
+                                <span class="mobile-field-label">Weekday OT:</span>
                                 <input type="time" class="mobile-time-input" value="${row.weekdayOvertime || '00:00'}" 
                                        data-field="weekdayOvertime" data-index="${index}" 
                                        ${canEdit ? '' : 'disabled'} onchange="handleFieldChange(${index}, 'weekdayOvertime', this.value)">
@@ -1296,7 +1298,7 @@ if (isset($_SESSION['employee_id'])) {
                 totalBankHolEnhancement += timeStringToMinutes(row.bankHolidayEnhancement);
                 totalExtraHours += timeStringToMinutes(row.extraHours || '00:00');
                 totalWeekdayOT += timeStringToMinutes(row.weekdayOvertime);
-                totalSatOT += timeStringToMinutes(r.satOvertime);
+                totalSatOT += timeStringToMinutes(row.satOvertime);
                 totalSunOT += timeStringToMinutes(row.sunOvertime);
                 totalBankHolOT += timeStringToMinutes(row.bankHolidayOvertime);
             });
@@ -1492,33 +1494,33 @@ if (isset($_SESSION['employee_id'])) {
             showLogin();
         }
 		
-		function showResetPassword() {
+			function showResetPassword() {
 			const employeeId = prompt('Enter your Employee ID to receive a password reset email:');
 			if (!employeeId) return;
     
 			requestPasswordReset(employeeId.trim());
 		}
 
-		async function requestPasswordReset(employeeId) {
-			try {
-				const response = await fetch(API_BASE_URL + '?path=/request-password-reset', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						employee_id: employeeId
-					})
-				});
+			async function requestPasswordReset(employeeId) {
+		try {
+			const response = await fetch(API_BASE_URL + '?path=/request-password-reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                employee_id: employeeId
+            })
+        });
         
-				const data = await response.json();
+			const data = await response.json();
         
-				if (data.success) {
-					alert('Password reset instructions have been sent to your registered email address. Please check your email and follow the link to reset your password.');
-				} else {
-					alert('Error: ' + data.error);
-				}
+			if (data.success) {
+            alert('Password reset instructions have been sent to your registered email address. Please check your email and follow the link to reset your password.');
+			} else {
+            alert('Error: ' + data.error);
+			}
 			} catch (error) {
-				console.error('Password reset request error:', error);
-				alert('Connection error. Please try again.');
+			console.error('Password reset request error:', error);
+			alert('Connection error. Please try again.');
 			}
 		}
     </script>
