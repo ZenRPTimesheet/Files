@@ -15,253 +15,6 @@ header('Referrer-Policy: strict-origin-when-cross-origin');
 header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
 header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';");
 
-// Rate limiting (basic)
-if (!isset($_SESSION['requests'])) {
-    $_SESSION['requests'] = [];
-}
-$now = time();
-$_SESSION['requests'] = array_filter($_SESSION['requests'], function($timestamp) use ($now) {
-    return ($now - $timestamp) < 60; // Keep requests from last minute
-});
-
-if (count($_SESSION['requests']) > 60) { // Max 60 requests per minute
-    http_response_code(429);
-    exit('Too many requests');
-}
-$_SESSION['requests'][] = $now;
-
-// CSRF Token Generation
-function generateCSRFToken() {
-    if (!isset($_SESSION['csrf_token'])) {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-    }
-    return $_SESSION['csrf_token'];
-}
-
-function validateCSRFToken($token) {
-    return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
-}
-
-// Input Sanitization
-function sanitizeInput($input) {
-    if (is_array($input)) {
-        return array_map('sanitizeInput', $input);
-    }
-    return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
-}
-
-function sanitizeTimeInput($input) {
-    if (!preg_match('/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/', $input)) {
-        return '00:00';
-    }
-    return $input;
-}
-
-// API handling with enhanced security
-if (isset($_GET['path'])) {
-    header('Content-Type: application/json');
-    
-    $path = sanitizeInput($_GET['path']);
-    $method = $_SERVER['REQUEST_METHOD'];
-    
-    // Demo database with hashed passwords
-    $employees = [
-        'employee' => [
-            'id' => 'employee',
-            'password' => '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', // password123
-            'name' => 'John Smith',
-            'site' => 'Royal London Hospital',
-            'jobTitle' => 'Staff Nurse',
-            'hpw' => '37.5'
-        ]
-    ];
-    
-    // Sample timesheet data
-    $timesheetData = [
-        'employee-2025-01' => [
-            [
-                'date' => '01/01/2025',
-                'startTime' => '08:00',
-                'stopTime' => '16:30',
-                'unpaidBreaks' => '00:30',
-                'normalPaidHours' => '08:00',
-                'overtimeHours' => '00:00',
-                'absenceType' => 'None',
-                'absenceHours' => '00:00',
-                'normalPaidHoursInput' => '08:00',
-                'satEnhancement' => '00:00',
-                'sunEnhancement' => '00:00',
-                'nightsEnhancement' => '00:00',
-                'bankHolidayEnhancement' => '08:00',
-                'extraHours' => '00:00',
-                'weekdayOvertime' => '00:00',
-                'satOvertime' => '00:00',
-                'sunOvertime' => '00:00',
-                'bankHolidayOvertime' => '00:00',
-                'comments' => 'New Year\'s Day - Bank Holiday'
-            ]
-        ]
-    ];
-    
-    try {
-        switch ($path) {
-            case '/login':
-                if ($method === 'POST') {
-                    $input = json_decode(file_get_contents('php://input'), true);
-                    
-                    if (!$input || !isset($input['employee_id']) || !isset($input['password'])) {
-                        echo json_encode(['success' => false, 'error' => 'Invalid input']);
-                        exit;
-                    }
-                    
-                    $employeeId = sanitizeInput($input['employee_id']);
-                    $password = $input['password'];
-                    
-                    if (isset($employees[$employeeId]) && password_verify($password, $employees[$employeeId]['password'])) {
-                        $_SESSION['employee_id'] = $employeeId;
-                        $_SESSION['last_activity'] = time();
-                        
-                        echo json_encode([
-                            'success' => true,
-                            'employee' => [
-                                'id' => $employees[$employeeId]['id'],
-                                'name' => $employees[$employeeId]['name'],
-                                'site' => $employees[$employeeId]['site'],
-                                'jobTitle' => $employees[$employeeId]['jobTitle'],
-                                'hpw' => $employees[$employeeId]['hpw']
-                            ]
-                        ]);
-                    } else {
-                        sleep(1); // Prevent brute force
-                        echo json_encode(['success' => false, 'error' => 'Invalid credentials']);
-                    }
-                }
-                break;
-                
-            case (preg_match('/^\/available-months\/(.+)$/', $path, $matches) ? true : false):
-                if (!isset($_SESSION['employee_id'])) {
-                    http_response_code(401);
-                    echo json_encode(['success' => false, 'error' => 'Unauthorized']);
-                    exit;
-                }
-                
-                echo json_encode([
-                    'success' => true,
-                    'months' => [
-                        ['year' => '2025', 'month' => '01', 'display_name' => 'January 2025'],
-                        ['year' => '2024', 'month' => '12', 'display_name' => 'December 2024']
-                    ]
-                ]);
-                break;
-                
-            case (preg_match('/^\/timesheet\/(.+)\/(\d{4})\/(\d{2})$/', $path, $matches) ? true : false):
-                if (!isset($_SESSION['employee_id'])) {
-                    http_response_code(401);
-                    echo json_encode(['success' => false, 'error' => 'Unauthorized']);
-                    exit;
-                }
-                
-                $employeeId = sanitizeInput($matches[1]);
-                $year = sanitizeInput($matches[2]);
-                $month = sanitizeInput($matches[3]);
-                $key = "$employeeId-$year-$month";
-                
-                if ($employeeId !== $_SESSION['employee_id']) {
-                    http_response_code(403);
-                    echo json_encode(['success' => false, 'error' => 'Access denied']);
-                    exit;
-                }
-                
-                $data = isset($timesheetData[$key]) ? $timesheetData[$key] : [];
-                
-                echo json_encode([
-                    'success' => true,
-                    'timesheetData' => $data,
-                    'originalTimesheetData' => $data,
-                    'is_locked' => false,
-                    'submission_status' => 'draft',
-                    'manager_comments' => '',
-                    'modifications_count' => 0
-                ]);
-                break;
-                
-            case '/save-draft':
-                if ($method === 'POST') {
-                    if (!isset($_SESSION['employee_id'])) {
-                        http_response_code(401);
-                        echo json_encode(['success' => false, 'error' => 'Unauthorized']);
-                        exit;
-                    }
-                    
-                    $input = json_decode(file_get_contents('php://input'), true);
-                    
-                    if (!$input || !isset($input['timesheet_data'])) {
-                        echo json_encode(['success' => false, 'error' => 'Invalid input']);
-                        exit;
-                    }
-                    
-                    // Sanitize timesheet data
-                    $timesheetData = array_map(function($row) {
-                        return [
-                            'date' => sanitizeInput($row['date'] ?? ''),
-                            'startTime' => sanitizeTimeInput($row['startTime'] ?? '00:00'),
-                            'stopTime' => sanitizeTimeInput($row['stopTime'] ?? '00:00'),
-                            'normalPaidHoursInput' => sanitizeTimeInput($row['normalPaidHoursInput'] ?? '00:00'),
-                            'satEnhancement' => sanitizeTimeInput($row['satEnhancement'] ?? '00:00'),
-                            'sunEnhancement' => sanitizeTimeInput($row['sunEnhancement'] ?? '00:00'),
-                            'nightsEnhancement' => sanitizeTimeInput($row['nightsEnhancement'] ?? '00:00'),
-                            'bankHolidayEnhancement' => sanitizeTimeInput($row['bankHolidayEnhancement'] ?? '00:00'),
-                            'extraHours' => sanitizeTimeInput($row['extraHours'] ?? '00:00'),
-                            'weekdayOvertime' => sanitizeTimeInput($row['weekdayOvertime'] ?? '00:00'),
-                            'satOvertime' => sanitizeTimeInput($row['satOvertime'] ?? '00:00'),
-                            'sunOvertime' => sanitizeTimeInput($row['sunOvertime'] ?? '00:00'),
-                            'bankHolidayOvertime' => sanitizeTimeInput($row['bankHolidayOvertime'] ?? '00:00'),
-                            'comments' => sanitizeInput($row['comments'] ?? '')
-                        ];
-                    }, $input['timesheet_data']);
-                    
-                    echo json_encode(['success' => true, 'message' => 'Draft saved successfully']);
-                }
-                break;
-                
-            case '/submit-timesheet':
-                if ($method === 'POST') {
-                    if (!isset($_SESSION['employee_id'])) {
-                        http_response_code(401);
-                        echo json_encode(['success' => false, 'error' => 'Unauthorized']);
-                        exit;
-                    }
-                    
-                    echo json_encode(['success' => true, 'message' => 'Timesheet submitted successfully']);
-                }
-                break;
-                
-            case '/request-password-reset':
-                if ($method === 'POST') {
-                    $input = json_decode(file_get_contents('php://input'), true);
-                    
-                    if (!$input || !isset($input['employee_id'])) {
-                        echo json_encode(['success' => false, 'error' => 'Invalid input']);
-                        exit;
-                    }
-                    
-                    // In production, this would send an email
-                    echo json_encode(['success' => true, 'message' => 'Password reset email sent']);
-                }
-                break;
-                
-            default:
-                http_response_code(404);
-                echo json_encode(['success' => false, 'error' => 'Endpoint not found']);
-                break;
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'error' => 'Server error']);
-    }
-    exit;
-}
-
 // Session timeout check
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) > 1800) {
     session_unset();
@@ -271,8 +24,6 @@ if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) >
 if (isset($_SESSION['employee_id'])) {
     $_SESSION['last_activity'] = time();
 }
-
-$csrfToken = generateCSRFToken();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -685,14 +436,13 @@ $csrfToken = generateCSRFToken();
                 <div id="errorAlert" class="alert alert-error hidden">Invalid employee ID. Please try again.</div>
                 <div class="alert alert-info">Please LogIn below.</div>
                 <form id="loginForm">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <div class="form-group">
                         <label for="employeeId" class="form-label">Employee ID</label>
-                        <input type="text" id="employeeId" name="employeeId" class="form-input" placeholder="Enter your employee ID" required autocomplete="username">
+                        <input type="text" id="employeeId" name="employeeId" class="form-input" placeholder="Enter your employee ID" required>
                     </div>
                     <div class="form-group">
                         <label for="password" class="form-label">Password</label>
-                        <input type="password" id="password" name="password" class="form-input" placeholder="Enter your password" required autocomplete="current-password">
+                        <input type="password" id="password" name="password" class="form-input" placeholder="Enter your password" required>
                     </div>
                     <button type="submit" id="loginBtn" class="login-btn">
                         <span id="loginText">Sign In</span>
@@ -857,27 +607,18 @@ $csrfToken = generateCSRFToken();
     <div class="save-indicator" id="saveIndicator">Saved successfully!</div>
 
     <script>
-        var API_BASE_URL = '<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>';
+        var API_BASE_URL = 'timesheet_api.php';
         var currentUser = null;
         var timesheetData = [];
         var originalData = [];
         var hasUnsavedChanges = false;
         var currentMonth = null;
         var isLocked = false;
-        var csrfToken = '<?php echo htmlspecialchars($csrfToken); ?>';
         
         document.addEventListener('DOMContentLoaded', function() {
             console.log('NHS Timesheet System - Employee Portal');
             showLogin();
             document.getElementById('loginForm').addEventListener('submit', handleLogin);
-            
-            // Security: Disable right-click and common dev shortcuts
-            document.addEventListener('contextmenu', e => e.preventDefault());
-            document.addEventListener('keydown', function(e) {
-                if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'C' || e.key === 'J'))) {
-                    e.preventDefault();
-                }
-            });
         });
         
         function showLogin() {
@@ -905,7 +646,7 @@ $csrfToken = generateCSRFToken();
             if (!currentUser) return;
             
             try {
-                const url = API_BASE_URL + '?path=/available-months/' + encodeURIComponent(currentUser.employeeId);
+                const url = API_BASE_URL + '?path=/available-months/' + currentUser.employeeId;
                 console.log('Calling URL:', url);
                 
                 const response = await fetch(url);
@@ -942,15 +683,8 @@ $csrfToken = generateCSRFToken();
             try {
                 const response = await fetch(API_BASE_URL + '?path=/login', {
                     method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    body: JSON.stringify({ 
-                        employee_id: employeeId, 
-                        password: password,
-                        csrf_token: csrfToken
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ employee_id: employeeId, password: password })
                 });
 
                 const data = await response.json();
@@ -992,14 +726,10 @@ $csrfToken = generateCSRFToken();
             console.log('Loading timesheet for:', currentUser.employeeId, 'Year:', year, 'Month:', month);
             
             try {
-                const url = API_BASE_URL + '?path=/timesheet/' + encodeURIComponent(currentUser.employeeId) + '/' + encodeURIComponent(year) + '/' + encodeURIComponent(month);
+                const url = API_BASE_URL + '?path=/timesheet/' + currentUser.employeeId + '/' + year + '/' + month;
                 console.log('Calling URL:', url);
                 
-                const response = await fetch(url, {
-                    headers: {
-                        'X-Requested-With': 'XMLHttpRequest'
-                    }
-                });
+                const response = await fetch(url);
                 const data = await response.json();
                 console.log('Timesheet response:', data);
 
@@ -1348,8 +1078,6 @@ $csrfToken = generateCSRFToken();
                                        data-field="extraHours" data-index="${index}" 
                                        ${canEdit ? '' : 'disabled'} onchange="handleFieldChange(${index}, 'extraHours', this.value)">
                             </div>
-                            <div class="mobile-field-row">
-                                <span class="mobile-field-label">Weekday OT:</span>
                                 <input type="time" class="mobile-time-input" value="${row.weekdayOvertime || '00:00'}" 
                                        data-field="weekdayOvertime" data-index="${index}" 
                                        ${canEdit ? '' : 'disabled'} onchange="handleFieldChange(${index}, 'weekdayOvertime', this.value)">
@@ -1568,7 +1296,7 @@ $csrfToken = generateCSRFToken();
                 totalBankHolEnhancement += timeStringToMinutes(row.bankHolidayEnhancement);
                 totalExtraHours += timeStringToMinutes(row.extraHours || '00:00');
                 totalWeekdayOT += timeStringToMinutes(row.weekdayOvertime);
-                totalSatOT += timeStringToMinutes(row.satOvertime);
+                totalSatOT += timeStringToMinutes(r.satOvertime);
                 totalSunOT += timeStringToMinutes(row.sunOvertime);
                 totalBankHolOT += timeStringToMinutes(row.bankHolidayOvertime);
             });
@@ -1638,15 +1366,11 @@ $csrfToken = generateCSRFToken();
             try {
                 const response = await fetch(API_BASE_URL + '?path=/save-draft', {
                     method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         employee_id: currentUser.employeeId,
                         year_month: currentMonth,
-                        timesheet_data: timesheetData,
-                        csrf_token: csrfToken
+                        timesheet_data: timesheetData
                     })
                 });
                 
@@ -1680,16 +1404,12 @@ $csrfToken = generateCSRFToken();
             try {
                 const response = await fetch(API_BASE_URL + '?path=/submit-timesheet', {
                     method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         employee_id: currentUser.employeeId,
                         year_month: currentMonth,
                         timesheet_data: timesheetData,
-                        employee_comments: employeeComments,
-                        csrf_token: csrfToken
+                        employee_comments: employeeComments
                     })
                 });
                 
@@ -1783,13 +1503,9 @@ $csrfToken = generateCSRFToken();
 			try {
 				const response = await fetch(API_BASE_URL + '?path=/request-password-reset', {
 					method: 'POST',
-					headers: { 
-						'Content-Type': 'application/json',
-						'X-Requested-With': 'XMLHttpRequest'
-					},
+					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({
-						employee_id: employeeId,
-						csrf_token: csrfToken
+						employee_id: employeeId
 					})
 				});
         
