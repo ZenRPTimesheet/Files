@@ -50,41 +50,6 @@ function sanitizeInput($input) {
     return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
 }
 
-// API handling for password reset
-if (isset($_GET['path'])) {
-    header('Content-Type: application/json');
-    
-    $path = sanitizeInput($_GET['path']);
-    $method = $_SERVER['REQUEST_METHOD'];
-    
-    try {
-        switch ($path) {
-            case '/request-password-reset':
-                if ($method === 'POST') {
-                    $input = json_decode(file_get_contents('php://input'), true);
-                    
-                    if (!$input || !isset($input['username'])) {
-                        echo json_encode(['success' => false, 'error' => 'Invalid input']);
-                        exit;
-                    }
-                    
-                    // In production, this would send an email
-                    echo json_encode(['success' => true, 'message' => 'Password reset email sent']);
-                }
-                break;
-                
-            default:
-                http_response_code(404);
-                echo json_encode(['success' => false, 'error' => 'Endpoint not found']);
-                break;
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'error' => 'Server error']);
-    }
-    exit;
-}
-
 // Session timeout check
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) > 1800) {
     session_unset();
@@ -304,6 +269,7 @@ $csrfToken = generateCSRFToken();
     /* Status and other elements */
     .highlight-diff { background: #ffe6e6 !important; font-weight: bold; border: 2px solid #dc3545 !important; }
     .manager-changed { background: #e7f3ff !important; border: 2px solid #007bff !important; }
+    .saved-change { background: #d4edda !important; border-color: #28a745 !important; transition: all 0.3s ease; }
     .hours-cell { font-weight: 600; }
     .hours-zero { color: #6c757d; }
     .hours-enhanced { color: #dc3545 !important; font-weight: bold !important; }
@@ -882,7 +848,7 @@ $csrfToken = generateCSRFToken();
 
 <script>
 // Configuration
-const API_URL = 'manager_api.php';
+const API_URL = 'manager_api_fixed.php';
 var csrfToken = '<?php echo htmlspecialchars($csrfToken); ?>';
 
 // Global variables
@@ -944,6 +910,242 @@ function isEmployeeModified(value) {
     return value && value !== '00:00' && value !== '00:00:00' && value.trim() !== '';
 }
 
+// FIXED: Recalculate totals in real-time
+function recalculateTotals() {
+    let totals = {
+        workedHours: 0,
+        normalPaidHours: 0,
+        overtimeHours: 0,
+        absenceHours: 0,
+        satEnhancement: 0,
+        sunEnhancement: 0,
+        nightsEnhancement: 0,
+        bankHolEnhancement: 0,
+        extraHours: 0,
+        weekdayOT: 0,
+        satOT: 0,
+        sunOT: 0,
+        bankHolOT: 0
+    };
+    
+    // Get current values from both desktop table and mobile cards
+    const desktopRows = document.querySelectorAll('#detailTable tr:not(.totals-row)');
+    const mobileCards = document.querySelectorAll('#mobileDetailCards .timesheet-card');
+    
+    if (desktopRows.length > 0) {
+        // Calculate from desktop table
+        desktopRows.forEach((row, index) => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length > 3) {
+                // Total worked hours (read-only cell)
+                const workedHoursCell = cells[3];
+                totals.workedHours += timeToMinutes(workedHoursCell.textContent || '00:00');
+                
+                // Normal paid hours (editable input)
+                const normalPaidInput = row.querySelector('input[data-field="normalPaidHours"]');
+                if (normalPaidInput) {
+                    totals.normalPaidHours += timeToMinutes(normalPaidInput.value || '00:00');
+                }
+                
+                // Overtime hours (read-only cell)
+                const overtimeHoursCell = cells[5];
+                totals.overtimeHours += timeToMinutes(overtimeHoursCell.textContent || '00:00');
+                
+                // Absence hours (read-only cell)
+                const absenceHoursCell = cells[7];
+                totals.absenceHours += timeToMinutes(absenceHoursCell.textContent || '00:00');
+                
+                // Enhancement fields (editable inputs)
+                const satEnhInput = row.querySelector('input[data-field="satEnhancement"]');
+                if (satEnhInput) totals.satEnhancement += timeToMinutes(satEnhInput.value || '00:00');
+                
+                const sunEnhInput = row.querySelector('input[data-field="sunEnhancement"]');
+                if (sunEnhInput) totals.sunEnhancement += timeToMinutes(sunEnhInput.value || '00:00');
+                
+                const nightsEnhInput = row.querySelector('input[data-field="nightsEnhancement"]');
+                if (nightsEnhInput) totals.nightsEnhancement += timeToMinutes(nightsEnhInput.value || '00:00');
+                
+                const bankHolEnhInput = row.querySelector('input[data-field="bankHolidayEnhancement"]');
+                if (bankHolEnhInput) totals.bankHolEnhancement += timeToMinutes(bankHolEnhInput.value || '00:00');
+                
+                // Overtime and extra hours fields (editable inputs)
+                const extraHoursInput = row.querySelector('input[data-field="extraHours"]');
+                if (extraHoursInput) totals.extraHours += timeToMinutes(extraHoursInput.value || '00:00');
+                
+                const weekdayOTInput = row.querySelector('input[data-field="weekdayOvertime"]');
+                if (weekdayOTInput) totals.weekdayOT += timeToMinutes(weekdayOTInput.value || '00:00');
+                
+                const satOTInput = row.querySelector('input[data-field="satOvertime"]');
+                if (satOTInput) totals.satOT += timeToMinutes(satOTInput.value || '00:00');
+                
+                const sunOTInput = row.querySelector('input[data-field="sunOvertime"]');
+                if (sunOTInput) totals.sunOT += timeToMinutes(sunOTInput.value || '00:00');
+                
+                const bankHolOTInput = row.querySelector('input[data-field="bankHolidayOvertime"]');
+                if (bankHolOTInput) totals.bankHolOT += timeToMinutes(bankHolOTInput.value || '00:00');
+            }
+        });
+    } else if (mobileCards.length > 0) {
+        // Calculate from mobile cards
+        mobileCards.forEach((card, index) => {
+            // Use original data for read-only values and current inputs for editable values
+            if (originalData[index]) {
+                totals.workedHours += timeToMinutes(originalData[index].total_worked_hours || '00:00');
+                totals.overtimeHours += timeToMinutes(originalData[index].total_overtime_hours || '00:00');
+                totals.absenceHours += timeToMinutes(originalData[index].absence_hours || '00:00');
+            }
+            
+            // Get current values from mobile inputs
+            const normalPaidInput = card.querySelector('input[data-field="normalPaidHours"]');
+            if (normalPaidInput) totals.normalPaidHours += timeToMinutes(normalPaidInput.value || '00:00');
+            
+            const satEnhInput = card.querySelector('input[data-field="satEnhancement"]');
+            if (satEnhInput) totals.satEnhancement += timeToMinutes(satEnhInput.value || '00:00');
+            
+            const sunEnhInput = card.querySelector('input[data-field="sunEnhancement"]');
+            if (sunEnhInput) totals.sunEnhancement += timeToMinutes(sunEnhInput.value || '00:00');
+            
+            const nightsEnhInput = card.querySelector('input[data-field="nightsEnhancement"]');
+            if (nightsEnhInput) totals.nightsEnhancement += timeToMinutes(nightsEnhInput.value || '00:00');
+            
+            const bankHolEnhInput = card.querySelector('input[data-field="bankHolidayEnhancement"]');
+            if (bankHolEnhInput) totals.bankHolEnhancement += timeToMinutes(bankHolEnhInput.value || '00:00');
+            
+            const extraHoursInput = card.querySelector('input[data-field="extraHours"]');
+            if (extraHoursInput) totals.extraHours += timeToMinutes(extraHoursInput.value || '00:00');
+            
+            const weekdayOTInput = card.querySelector('input[data-field="weekdayOvertime"]');
+            if (weekdayOTInput) totals.weekdayOT += timeToMinutes(weekdayOTInput.value || '00:00');
+            
+            const satOTInput = card.querySelector('input[data-field="satOvertime"]');
+            if (satOTInput) totals.satOT += timeToMinutes(satOTInput.value || '00:00');
+            
+            const sunOTInput = card.querySelector('input[data-field="sunOvertime"]');
+            if (sunOTInput) totals.sunOT += timeToMinutes(sunOTInput.value || '00:00');
+            
+            const bankHolOTInput = card.querySelector('input[data-field="bankHolidayOvertime"]');
+            if (bankHolOTInput) totals.bankHolOT += timeToMinutes(bankHolOTInput.value || '00:00');
+        });
+    }
+    
+    // Update totals row
+    document.getElementById('totalWorkedHours').innerText = minutesToTime(totals.workedHours);
+    document.getElementById('totalNormalPaidHours').innerText = minutesToTime(totals.normalPaidHours);
+    document.getElementById('totalOvertimeHours').innerText = minutesToTime(totals.overtimeHours);
+    document.getElementById('totalAbsenceHours').innerText = minutesToTime(totals.absenceHours);
+    document.getElementById('totalSatEnhancement').innerText = minutesToTime(totals.satEnhancement);
+    document.getElementById('totalSunEnhancement').innerText = minutesToTime(totals.sunEnhancement);
+    document.getElementById('totalNightsEnhancement').innerText = minutesToTime(totals.nightsEnhancement);
+    document.getElementById('totalBankHolEnhancement').innerText = minutesToTime(totals.bankHolEnhancement);
+    document.getElementById('totalExtraHours').innerText = minutesToTime(totals.extraHours);
+    document.getElementById('totalWeekdayOT').innerText = minutesToTime(totals.weekdayOT);
+    document.getElementById('totalSatOT').innerText = minutesToTime(totals.satOT);
+    document.getElementById('totalSunOT').innerText = minutesToTime(totals.sunOT);
+    document.getElementById('totalBankHolOT').innerText = minutesToTime(totals.bankHolOT);
+    
+    // Also update hours summary
+    recalculateHoursSummary();
+}
+
+function recalculateHoursSummary() {
+    let expectedTotal = 0;
+    let claimedTotal = 0;
+    
+    // Calculate from current form values
+    if (originalData && originalData.length > 0) {
+        originalData.forEach((row, index) => {
+            // Expected = total worked + absence (these are read-only)
+            expectedTotal += timeToMinutes(row.total_worked_hours || '00:00');
+            expectedTotal += timeToMinutes(row.absence_hours || '00:00');
+            
+            // Claimed = normal paid + absence + all enhancements + overtime
+            // Get current values from inputs or original data
+            let normalPaid = '00:00';
+            const normalPaidInput = document.querySelector(`input[data-field="normalPaidHours"][data-index="${index}"]`);
+            if (normalPaidInput) {
+                normalPaid = normalPaidInput.value || '00:00';
+            } else if (row.employee_normal_paid_hours) {
+                normalPaid = row.employee_normal_paid_hours;
+            }
+            claimedTotal += timeToMinutes(normalPaid);
+            claimedTotal += timeToMinutes(row.absence_hours || '00:00');
+            
+            // Get enhancement values from inputs
+            const fields = ['satEnhancement', 'sunEnhancement', 'nightsEnhancement', 'bankHolidayEnhancement', 
+                          'extraHours', 'weekdayOvertime', 'satOvertime', 'sunOvertime', 'bankHolidayOvertime'];
+            
+            fields.forEach(field => {
+                const input = document.querySelector(`input[data-field="${field}"][data-index="${index}"]`);
+                if (input) {
+                    claimedTotal += timeToMinutes(input.value || '00:00');
+                } else {
+                    // Fallback to original data
+                    const originalField = getOriginalFieldName(field);
+                    if (row[originalField]) {
+                        claimedTotal += timeToMinutes(row[originalField]);
+                    }
+                }
+            });
+        });
+    }
+    
+    const variance = claimedTotal - expectedTotal;
+    
+    document.getElementById('expectedHours').innerText = minutesToTime(expectedTotal);
+    document.getElementById('claimedHours').innerText = minutesToTime(claimedTotal);
+    document.getElementById('varianceHours').innerText = minutesToTime(Math.abs(variance));
+    
+    const varianceNote = document.getElementById('varianceNote');
+    if (variance > 0) {
+        varianceNote.innerText = '(Over-claimed)';
+        varianceNote.style.color = '#dc3545';
+    } else if (variance < 0) {
+        varianceNote.innerText = '(Under-claimed)';
+        varianceNote.style.color = '#fd7e14';
+    } else {
+        varianceNote.innerText = '(Perfect match)';
+        varianceNote.style.color = '#28a745';
+    }
+}
+
+function getOriginalFieldName(field) {
+    const mapping = {
+        'satEnhancement': 'sat_enhancement',
+        'sunEnhancement': 'sun_enhancement',
+        'nightsEnhancement': 'nights_enhancement',
+        'bankHolidayEnhancement': 'bank_holiday_enhancement',
+        'extraHours': 'extra_hours',
+        'weekdayOvertime': 'weekday_overtime',
+        'satOvertime': 'sat_overtime',
+        'sunOvertime': 'sun_overtime',
+        'bankHolidayOvertime': 'bank_holiday_overtime'
+    };
+    return mapping[field] || field;
+}
+
+// FIXED: Update the trackChange function to recalculate totals
+function trackChange(element) {
+    const field = element.getAttribute('data-field');
+    const index = element.getAttribute('data-index');
+    const value = element.value;
+    
+    // Ensure we have the row index as string (JavaScript object keys are strings)
+    const rowIndex = String(index);
+    
+    if (!pendingChanges[rowIndex]) {
+        pendingChanges[rowIndex] = {};
+    }
+    
+    pendingChanges[rowIndex][field] = value;
+    element.classList.add('manager-changed');
+    
+    // Recalculate totals when any field changes
+    recalculateTotals();
+    
+    console.log('Change tracked:', { rowIndex, field, value });
+    console.log('Current pending changes:', pendingChanges);
+}
+
 // Authentication functions
 async function loginUser() {
     console.log('Attempting manager login...');
@@ -963,9 +1165,9 @@ async function loginUser() {
         
         if (data.success) {
             currentUser = data.user;
-	    console.log('Stored currentUser:', currentUser);
-	    console.log('Manager ID:', currentUser.id);
-	    console.log('All currentUser keys:', Object.keys(currentUser));    
+            console.log('Stored currentUser:', currentUser);
+            console.log('Manager ID:', currentUser.id);
+            console.log('All currentUser keys:', Object.keys(currentUser));    
             document.getElementById('login-modal').style.display = 'none';
             document.getElementById('main-container').style.display = 'block';
             document.getElementById('logout-btn').style.display = 'block';
@@ -1009,17 +1211,18 @@ function showResetPassword() {
     requestPasswordReset(username.trim());
 }
 
+// FIXED: Password reset function
 async function requestPasswordReset(username) {
     try {
-        const response = await fetch('<?php echo htmlspecialchars($_SERVER['PHP_SELF']); ?>' + '?path=/request-password-reset', {
+        // Call manager_api_fixed.php, not the manager.php endpoint
+        const response = await fetch(API_URL, {
             method: 'POST',
             headers: { 
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest'
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                username: username,
-                csrf_token: csrfToken
+                action: 'request_password_reset',  // Use the API action
+                username: username
             })
         });
         
@@ -1126,7 +1329,7 @@ async function loadList() {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
                         <td><strong>${row.employee_id}</strong></td>
-			<td>${row.employee_name}</td>
+                        <td>${row.employee_name}</td>
                         <td>${row.period}</td>
                         <td><span class="dept-badge">${row.department || 'N/A'}</span></td>
                         <td><span class="team-badge">${row.team || 'N/A'}</span></td>
@@ -1441,7 +1644,7 @@ function buildDetailTable(data) {
             <td><input type="time" class="editable-time ${stopChanged ? 'employee-value' : ''}" value="${convertTimeFormat(row.submitted_stop)}" data-field="stopTime" data-index="${index}" onchange="trackChange(this)"></td>
             <td class="hours-cell ${getHoursColorClass(row.total_worked_hours)}">${row.total_worked_hours || '00:00'}</td>
             <td><input type="time" class="editable-time ${isEmployeeModified(row.employee_normal_paid_hours) ? 'employee-value' : ''}" value="${convertTimeFormat(row.employee_normal_paid_hours)}" data-field="normalPaidHours" data-index="${index}" onchange="trackChange(this)"></td>
-            <td class="hours-cell overtime-hours">${row.overtime_hours || '00:00'}</td>
+            <td class="hours-cell overtime-hours">${row.total_overtime_hours || '00:00'}</td>
             <td>${row.absence_type || '-'}</td>
             <td class="hours-cell ${row.absence_hours && row.absence_hours !== '00:00' ? 'absence-highlight' : ''}">${row.absence_hours || '00:00'}</td>
             <td class="enhancement-cell"><input type="text" class="editable-time ${isEmployeeModified(row.sat_enhancement) ? 'employee-value' : ''}" value="${row.sat_enhancement || '00:00'}" data-field="satEnhancement" data-index="${index}" onchange="trackChange(this)" onblur="formatOnBlur(this)"></td>
@@ -1461,7 +1664,7 @@ function buildDetailTable(data) {
         // Add to totals
         totals.workedHours += timeToMinutes(row.total_worked_hours || '00:00');
         totals.normalPaidHours += timeToMinutes(row.employee_normal_paid_hours || '00:00');
-        totals.overtimeHours += timeToMinutes(row.overtime_hours || '00:00');
+        totals.overtimeHours += timeToMinutes(row.total_overtime_hours || '00:00');
         totals.absenceHours += timeToMinutes(row.absence_hours || '00:00');
         totals.satEnhancement += timeToMinutes(row.sat_enhancement || '00:00');
         totals.sunEnhancement += timeToMinutes(row.sun_enhancement || '00:00');
@@ -1532,22 +1735,6 @@ function calculateAndShowHoursSummary(data) {
     document.getElementById('hoursSummary').style.display = 'block';
 }
 
-// Edit tracking functions
-function trackChange(element) {
-    const field = element.getAttribute('data-field');
-    const index = element.getAttribute('data-index');
-    const value = element.value;
-    
-    if (!pendingChanges[index]) {
-        pendingChanges[index] = {};
-    }
-    
-    pendingChanges[index][field] = value;
-    element.classList.add('manager-changed');
-    
-    console.log('Change tracked:', { index, field, value });
-}
-
 function formatOnBlur(element) {
     const value = element.value;
     if (value && !value.includes(':')) {
@@ -1604,7 +1791,7 @@ function updateListSectionTitle() {
     }
 }
 
-// Action functions
+// FIXED: Action functions
 async function saveChanges() {
     if (Object.keys(pendingChanges).length === 0) {
         alert('No changes to save');
@@ -1621,8 +1808,8 @@ async function saveChanges() {
                 action: 'save_manager_changes',
                 employee_id: currentDetail.employee_id,
                 period: currentDetail.period,
-                changes: pendingChanges,
-		manager_id: currentUser.id
+                changes: pendingChanges, // This structure is now correct
+                manager_id: currentUser.id
             })
         });
         
@@ -1631,12 +1818,23 @@ async function saveChanges() {
         
         if (data.success) {
             showSaveIndicator();
+            
+            // Clear pending changes
             pendingChanges = {};
             
-            // Remove manager-changed classes
+            // Update UI to show changes are saved
             document.querySelectorAll('.manager-changed').forEach(el => {
                 el.classList.remove('manager-changed');
+                el.classList.add('saved-change');
             });
+            
+            // Optionally refresh the detail view to show the saved state
+            setTimeout(() => {
+                document.querySelectorAll('.saved-change').forEach(el => {
+                    el.classList.remove('saved-change');
+                });
+            }, 2000);
+            
         } else {
             alert('Error saving changes: ' + (data.error || 'Unknown error'));
         }
@@ -1665,7 +1863,7 @@ async function approve() {
                 action: 'approve_timesheet',
                 employee_id: currentDetail.employee_id,
                 period: currentDetail.period,
-		manager_id: currentUser.id
+                manager_id: currentUser.id
             })
         });
         
@@ -1704,7 +1902,7 @@ async function reject() {
                 employee_id: currentDetail.employee_id,
                 period: currentDetail.period,
                 reason: reason,
-		manager_id: currentUser.id
+                manager_id: currentUser.id
             })
         });
         
@@ -1734,7 +1932,7 @@ function showSaveIndicator() {
 
 // Event listeners
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('NHS Manager Timesheet Portal - Version 2.0');
+    console.log('NHS Manager Timesheet Portal - Version 2.0 (Fixed)');
     
     // Security: Disable right-click and common dev shortcuts
     document.addEventListener('contextmenu', e => e.preventDefault());

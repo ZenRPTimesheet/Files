@@ -211,7 +211,7 @@ try {
         exit;
     }
 
-    // --- PASSWORD RESET REQUEST ---
+    // --- PASSWORD RESET REQUEST (FIXED) ---
     if ($action === 'request_password_reset') {
         $username = filter_var($input['username'] ?? '', FILTER_SANITIZE_STRING);
         
@@ -222,13 +222,26 @@ try {
 
         try {
             // Check if user exists and is a manager
-            $stmt = $pdo->prepare("SELECT id, username, email, first_name, last_name FROM users WHERE username = ? AND role = 'manager'");
+            $stmt = $pdo->prepare("SELECT id, username, email, first_name, last_name FROM users WHERE username = ? AND role = 'manager' AND is_active = true");
             $stmt->execute([$username]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$user) {
+                // Log failed attempt for security
+                $audit->logDataAccess('unknown', 'unknown', 'password_reset_failed', null, 'authentication', [
+                    'username' => $username,
+                    'reason' => 'user_not_found_or_inactive'
+                ]);
+                
                 // Don't reveal if user exists or not for security
-                echo json_encode(['success' => true, 'message' => 'If the username exists, a password reset email has been sent.']);
+                echo json_encode(['success' => true, 'message' => 'If the username exists and belongs to an active manager, a password reset email has been sent.']);
+                exit;
+            }
+
+            // Check if user has a valid email
+            if (empty($user['email']) || !filter_var($user['email'], FILTER_VALIDATE_EMAIL)) {
+                error_log("NHS Manager Password reset: User {$username} has invalid email: " . ($user['email'] ?? 'NULL'));
+                echo json_encode(['success' => true, 'message' => 'If the username exists and belongs to an active manager, a password reset email has been sent.']);
                 exit;
             }
 
@@ -247,16 +260,16 @@ try {
 
             // Log the password reset request
             $audit->logDataAccess($user['id'], 'manager', 'password_reset_requested', null, 'authentication', [
-                'username' => $username
+                'username' => $username,
+                'email' => $user['email']
             ]);
 
-            // In production, send actual email here
-            // For now, we'll just log the reset token (remove this in production!)
+            // For development - log the token (remove this in production!)
             error_log("NHS Manager Password Reset Token for {$username}: {$resetToken}");
 
-            // TODO: Send actual email
+            // TODO: Send actual email in production
             /*
-            $resetUrl = "https://your-domain.com/reset-password.php?token=" . urlencode($resetToken);
+            $resetUrl = "https://zentimesheets.com/reset-password.php?token=" . urlencode($resetToken);
             $subject = "NHS Timesheet System - Password Reset Request";
             $message = "
                 Dear {$user['first_name']} {$user['last_name']},
@@ -275,8 +288,8 @@ try {
             ";
             
             $headers = [
-                'From: noreply@nhs-timesheet.com',
-                'Reply-To: support@nhs-timesheet.com',
+                'From: noreply@zentimesheets.com',
+                'Reply-To: support@zentimesheets.com',
                 'X-Mailer: PHP/' . phpversion(),
                 'Content-Type: text/plain; charset=UTF-8'
             ];
@@ -284,7 +297,7 @@ try {
             mail($user['email'], $subject, $message, implode("\r\n", $headers));
             */
 
-            echo json_encode(['success' => true, 'message' => 'If the username exists, a password reset email has been sent.']);
+            echo json_encode(['success' => true, 'message' => 'If the username exists and belongs to an active manager, a password reset email has been sent.']);
             
         } catch (Exception $e) {
             error_log("NHS Manager Password reset error: " . $e->getMessage());
@@ -527,7 +540,7 @@ try {
         exit;
     }
 
-    // --- SAVE MANAGER CHANGES ---
+    // --- SAVE MANAGER CHANGES (FIXED) ---
     if ($action === 'save_manager_changes') {
         $employee_id = filter_var($input['employee_id'] ?? '', FILTER_SANITIZE_STRING);
         $period = filter_var($input['period'] ?? '', FILTER_SANITIZE_STRING);
@@ -569,7 +582,7 @@ try {
             $manager = $stmt->fetch(PDO::FETCH_ASSOC);
             $managerName = ($manager['first_name'] ?? '') . ' ' . ($manager['last_name'] ?? '');
             
-            // Get original timesheet data - Updated column names
+            // Get original timesheet data with dates - ordered by date
             $stmt = $pdo->prepare("
                 SELECT sched_date, earliest_start, latest_stop, absence_type, absence_hours,
                        employee_normal_paid_hours, sat_enhancement, sun_enhancement, 
@@ -579,26 +592,31 @@ try {
                 WHERE employee_id = ? 
                 AND EXTRACT(YEAR FROM sched_date) = ?
                 AND EXTRACT(MONTH FROM sched_date) = ?
+                ORDER BY sched_date ASC
             ");
             $stmt->execute([$employee_id, $year, $month]);
             $originalRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $originalByDate = [];
-            foreach ($originalRows as $row) {
-                $originalByDate[$row['sched_date']] = $row;
-            }
 
             $savedChanges = 0;
             
-            foreach ($changes as $dayIndex => $dayChanges) {
-                $dateKey = $dayChanges['date'] ?? null;
-                if (!$dateKey) continue;
+            // Process changes - $changes is keyed by row index from JavaScript
+            foreach ($changes as $rowIndex => $dayChanges) {
+                // Get the corresponding date for this row index
+                if (!isset($originalRows[$rowIndex])) {
+                    error_log("NHS Manager: No original row found for index $rowIndex");
+                    continue;
+                }
                 
-                unset($dayChanges['date']);
-                
-                $originalRow = $originalByDate[$dateKey];
+                $dateKey = $originalRows[$rowIndex]['sched_date'];
+                $originalRow = $originalRows[$rowIndex];
                 
                 foreach ($dayChanges as $fieldName => $newValue) {
                     $originalValue = getOriginalFieldValue($originalRow, $fieldName);
+                    
+                    // Skip if value hasn't actually changed
+                    if ($originalValue === $newValue) {
+                        continue;
+                    }
                     
                     // Handle employee_normal_paid_hours field - direct database update
                     if ($fieldName === 'normalPaidHours') {
@@ -614,7 +632,7 @@ try {
                         ]);
                     }
                     
-                    // Check existing modification
+                    // Check existing modification for this field on this date
                     $stmt = $pdo->prepare("
                         SELECT id, original_value, modified_value, modified_by_role 
                         FROM timesheet_modifications 
@@ -622,30 +640,37 @@ try {
                         AND original_record_date = ? 
                         AND field_name = ?
                         AND status IN ('pending', 'submitted')
+                        ORDER BY modification_date DESC
+                        LIMIT 1
                     ");
                     $stmt->execute([$employee_id, $dateKey, $fieldName]);
                     $existingMod = $stmt->fetch(PDO::FETCH_ASSOC);
                     
                     if ($existingMod) {
-                        // Update existing record
+                        // Update existing record - manager override
                         $stmt = $pdo->prepare("
                             UPDATE timesheet_modifications 
                             SET modified_value = ?, 
-                                original_employee_value = ?,
+                                original_employee_value = CASE 
+                                    WHEN modified_by_role = 'employee' THEN modified_value 
+                                    ELSE original_employee_value 
+                                END,
                                 modified_by = ?, 
                                 modified_by_role = 'manager',
                                 manager_override = TRUE,
-                                modification_date = CURRENT_TIMESTAMP
+                                modification_date = CURRENT_TIMESTAMP,
+                                status = 'submitted'
                             WHERE id = ?
                         ");
                         $stmt->execute([
                             $newValue,
-                            $existingMod['modified_value'],
                             $managerName,
                             $existingMod['id']
                         ]);
+                        
+                        error_log("NHS Manager: Updated existing modification for $fieldName on $dateKey: $originalValue -> $newValue");
                     } else {
-                        // Create new modification
+                        // Create new modification record
                         $stmt = $pdo->prepare("
                             INSERT INTO timesheet_modifications (
                                 submission_id, original_record_employee_id, original_record_date, field_name,
@@ -662,15 +687,31 @@ try {
                             $newValue,
                             $managerName
                         ]);
+                        
+                        error_log("NHS Manager: Created new modification for $fieldName on $dateKey: $originalValue -> $newValue");
                     }
                     $savedChanges++;
                 }
             }
             
+            // Update submission status if it was approved back to submitted
+            $stmt = $pdo->prepare("
+                UPDATE timesheet_submissions 
+                SET status = CASE 
+                    WHEN status = 'approved' THEN 'submitted' 
+                    ELSE status 
+                END,
+                manager_comments = CONCAT(COALESCE(manager_comments, ''), CASE WHEN manager_comments IS NOT NULL AND manager_comments != '' THEN '\n' ELSE '' END, ?)
+                WHERE employee_id = ? AND year_month = ?
+            ");
+            $managerComment = "Manager made $savedChanges changes on " . date('Y-m-d H:i:s');
+            $stmt->execute([$managerComment, $employee_id, $period]);
+            
             $pdo->commit();
             echo json_encode([
                 "success" => true,
-                "message" => "Manager changes saved successfully ($savedChanges modifications)"
+                "message" => "Manager changes saved successfully ($savedChanges modifications)",
+                "changes_saved" => $savedChanges
             ]);
             
         } catch (Exception $e) {
@@ -781,26 +822,26 @@ try {
                 $approvedStopTime = $dayMods['stopTime'] ?? $formatTime($row['latest_stop']);
                 
                 $stmt = $pdo->prepare("
-				INSERT INTO approved_timesheets (
-				submission_id, employee_id, employee_name, sched_date, job_title, site, hpw,
-				approved_start_time, approved_stop_time, 
-				approved_total_worked_hours, approved_employee_normal_paid_hours,
-				approved_normal_paid_hours, approved_total_overtime_hours,
-				approved_absence_type, approved_absence_hours,
-				approved_sat_enhancement, approved_sun_enhancement, 
-				approved_nights_enhancement, approved_bank_holiday_enhancement,
-				approved_extra_hours, approved_weekday_overtime, 
-				approved_saturday_overtime, approved_sunday_overtime, approved_bank_holiday_overtime,
-				employee_comments, approved_by, muid, team, approved_unpaid_breaks, manager_comments
-				) VALUES (
-				?, ?, ?, ?, ?, ?, ?,
-				?, ?, ?, ?, ?, ?,
-				?, ?,
-				?, ?, ?, ?,
-				?, ?, ?, ?, ?,
-					?, ?, ?, ?, ?, ?
-			)
-		");
+                INSERT INTO approved_timesheets (
+                submission_id, employee_id, employee_name, sched_date, job_title, site, hpw,
+                approved_start_time, approved_stop_time, 
+                approved_total_worked_hours, approved_employee_normal_paid_hours,
+                approved_normal_paid_hours, approved_total_overtime_hours,
+                approved_absence_type, approved_absence_hours,
+                approved_sat_enhancement, approved_sun_enhancement, 
+                approved_nights_enhancement, approved_bank_holiday_enhancement,
+                approved_extra_hours, approved_weekday_overtime, 
+                approved_saturday_overtime, approved_sunday_overtime, approved_bank_holiday_overtime,
+                employee_comments, approved_by, muid, team, approved_unpaid_breaks, manager_comments
+                ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+            )
+        ");
                 
                 $result = $stmt->execute([
                     $submissionId, $employee_id, $row['employee_name'], $row['sched_date'],
@@ -808,7 +849,7 @@ try {
                     $approvedStartTime, $approvedStopTime, 
                     $formatTime($row['total_worked_hours']),
                     $dayMods['normalPaidHours'] ?? $formatTime($row['employee_normal_paid_hours']),
-					$formatTime($row['employee_normal_paid_hours']),
+                    $formatTime($row['employee_normal_paid_hours']),
                     $formatTime($row['total_overtime_hours']),
                     $dayMods['absenceType'] ?? $row['absence_type'],
                     $dayMods['absenceHours'] ?? $formatTime($row['absence_hours']),
@@ -821,9 +862,9 @@ try {
                     $dayMods['satOvertime'] ?? $formatTime($row['saturday_overtime']),
                     $dayMods['sunOvertime'] ?? $formatTime($row['sunday_overtime']),
                     $dayMods['bankHolidayOvertime'] ?? $formatTime($row['bank_holiday_overtime']),
-					$employeeComments, $approvedBy, $muid, $team, 
-					'00:00:00', // approved_unpaid_breaks
-					'', // manager_comments  
+                    $employeeComments, $approvedBy, $muid, $team, 
+                    '00:00:00', // approved_unpaid_breaks
+                    '', // manager_comments  
                 ]);
                 
                 if ($result) $insertedCount++;
